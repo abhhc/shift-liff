@@ -23,13 +23,17 @@
   select { font-size: 15px; padding: 6px; border: 1px solid #ccc; border-radius: 6px; background: #fff; }
   .row { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
   .row:last-child { border-bottom: none; }
-  .date { width: 68px; font-weight: 600; }
+  .row.off { background: #fafafa; }
+  .date { width: 68px; font-weight: 600; flex-shrink: 0; }
   .date.sat { color: #2563eb; } .date.sun { color: #dc2626; }
-  .row .times { flex: 1; }
+  .row .times { flex: 1; flex-wrap: wrap; }
+  .range { width: 100%; font-size: 11px; color: var(--sub); }
   .clear { border: none; background: none; color: var(--sub); font-size: 13px; padding: 4px; }
   .locked { flex: 1; color: var(--sub); }
   .tag { font-size: 11px; padding: 2px 6px; border-radius: 4px; background: var(--lock); color: var(--sub); margin-left: 4px; }
   .tag.add { background: var(--warn); color: var(--warn-text); }
+  textarea { width: 100%; font-size: 15px; padding: 8px; border: 1px solid #ccc; border-radius: 6px; font-family: inherit; resize: vertical; }
+  .count { text-align: right; font-size: 12px; color: var(--sub); margin-top: 4px; }
   .btn { display: block; width: calc(100% - 32px); margin: 16px; padding: 14px; border: none; border-radius: 10px; background: var(--main); color: #fff; font-size: 16px; font-weight: 700; }
   .btn.sub { background: #fff; color: var(--text); border: 1px solid #ccc; width: auto; margin: 0; padding: 8px 12px; font-size: 14px; font-weight: 400; }
   .btn:disabled { opacity: .5; }
@@ -50,6 +54,7 @@ const GAS_URL = 'https://script.google.com/macros/s/AKfycbwAGwZt8m5oSnbd15OPI_GK
 const WEEK = ['日', '月', '火', '水', '木', '金', '土'];
 let form = null;
 let idToken = null;
+let dayMap = {};
 const app = document.getElementById('app');
 
 function esc(s) {
@@ -67,19 +72,6 @@ function showMessage(html, isError) {
   app.innerHTML = `<p class="msg ${isError ? 'error' : ''}">${html}</p>`;
 }
 
-function datesInPeriod(a, b) {
-  const out = [];
-  const [y1, m1, d1] = a.split('-').map(Number);
-  const [y2, m2, d2] = b.split('-').map(Number);
-  const dt = new Date(y1, m1 - 1, d1);
-  const end = new Date(y2, m2 - 1, d2);
-  while (dt <= end) {
-    out.push(`${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`);
-    dt.setDate(dt.getDate() + 1);
-  }
-  return out;
-}
-
 function dayOf(ds) {
   const [y, m, d] = ds.split('-').map(Number);
   return new Date(y, m - 1, d).getDay();
@@ -90,45 +82,63 @@ function label(ds) {
   return `${m}/${d}(${WEEK[dayOf(ds)]})`;
 }
 
-function timeSelect(cls, value, disabled) {
+// options にない値（店長が受付時間を変えた後の古い提出など）も、消えないように表示する
+function timeSelect(cls, value, options) {
+  const list = options.slice();
+  if (value && list.indexOf(value) < 0) list.push(value);
+  list.sort();
   const opts = ['<option value="">--:--</option>']
-    .concat(form.timeOptions.map(t => `<option value="${t}" ${t === value ? 'selected' : ''}>${t}</option>`));
-  return `<select class="${cls}" ${disabled ? 'disabled' : ''}>${opts.join('')}</select>`;
+    .concat(list.map(t => `<option value="${t}" ${t === value ? 'selected' : ''}>${t}</option>`));
+  return `<select class="${cls}">${opts.join('')}</select>`;
 }
 
 function render() {
   const byDate = {};
   form.entries.forEach(e => { byDate[e.date] = e; });
+  dayMap = {};
+  form.days.forEach(d => { dayMap[d.date] = d; });
   const phase = form.phase;
   const banner = {
     open: `締切：${esc(form.deadline)}　締切までは何度でも修正できます`,
-    late: `締切を過ぎました。${esc(form.lateUntil)}までは、空いている日の追加のみできます`,
+    late: `締切を過ぎました。${esc(form.lateUntil)}までは、空いている日の追加と備考の変更のみできます`,
     closed: '今回の受付は終了しました。変更は店長に直接連絡してください',
   }[phase];
 
-  const rows = datesInPeriod(form.periodStart, form.periodEnd).map(ds => {
+  const rows = form.days.map(day => {
+    const ds = day.date;
     const e = byDate[ds];
     const dow = dayOf(ds);
     const cls = dow === 0 ? 'sun' : dow === 6 ? 'sat' : '';
-    const locked = (phase === 'late' && e) || phase === 'closed';
+    const locked = !day.open || (phase === 'late' && e) || phase === 'closed';
     let body;
-    if (locked) {
-      body = e
-        ? `<span class="locked">${e.start}〜${e.end}<span class="tag ${e.kind === '追加' ? 'add' : ''}">${e.kind === '追加' ? '追加' : '提出済み'}</span></span>`
-        : '<span class="locked">―</span>';
+    if (e && locked && (phase !== 'open' || day.open)) {
+      body = `<span class="locked">${e.start}〜${e.end}<span class="tag ${e.kind === '追加' ? 'add' : ''}">${e.kind === '追加' ? '追加' : '提出済み'}</span></span>`;
+    } else if (!day.open) {
+      body = `<span class="locked">${esc(day.note || '受付なし')}</span>`;
+    } else if (locked) {
+      body = '<span class="locked">―</span>';
     } else {
-      body = `<span class="times">${timeSelect('start', e ? e.start : '')}〜${timeSelect('end', e ? e.end : '')}</span>
+      body = `<span class="times">${timeSelect('start', e ? e.start : '', day.options)}〜${timeSelect('end', e ? e.end : '', day.options)}
+                <span class="range">受付 ${day.start}〜${day.end}</span></span>
               <button class="clear" type="button">クリア</button>`;
     }
-    return `<div class="row" data-date="${ds}" data-locked="${locked ? 1 : 0}"><span class="date ${cls}">${label(ds)}</span>${body}</div>`;
+    return `<div class="row ${day.open ? '' : 'off'}" data-date="${ds}" data-locked="${locked ? 1 : 0}"><span class="date ${cls}">${label(ds)}</span>${body}</div>`;
   }).join('');
 
   const bulk = phase === 'closed' ? '' : `
     <div class="card">
       <h2>曜日でまとめて入力</h2>
       <div class="weeks">${WEEK.map((w, i) => `<label><input type="checkbox" value="${i}"> ${w}</label>`).join('')}</div>
-      <div class="times">${timeSelect('bulk-start', '')}〜${timeSelect('bulk-end', '')}
+      <div class="times">${timeSelect('bulk-start', '', form.allOptions)}〜${timeSelect('bulk-end', '', form.allOptions)}
         <button class="btn sub" type="button" id="bulk-apply">反映</button></div>
+    </div>`;
+
+  const memo = `
+    <div class="card">
+      <h2>備考（任意）</h2>
+      <textarea id="memo" rows="3" maxlength="${form.memoMax}" ${phase === 'closed' ? 'disabled' : ''}
+        placeholder="例：第3週はテスト期間のため、夕方以降なら出られます">${esc(form.memo || '')}</textarea>
+      <div class="count"><span id="memo-count">${(form.memo || '').length}</span>/${form.memoMax}</div>
     </div>`;
 
   app.innerHTML = `
@@ -141,6 +151,7 @@ function render() {
     ${bulk}
     <div class="card"><h2>出勤できる日と時間</h2>${rows}</div>
     <p class="note">出勤できない日は空欄のままにしてください。</p>
+    ${memo}
     ${phase === 'closed' ? '' : `<button class="btn" id="submit">${phase === 'late' ? '追加を提出する' : '提出する'}</button>`}
   `;
 
@@ -149,6 +160,8 @@ function render() {
     row.querySelector('.start').value = '';
     row.querySelector('.end').value = '';
   }));
+  const memoEl = document.getElementById('memo');
+  memoEl.addEventListener('input', () => { document.getElementById('memo-count').textContent = memoEl.value.length; });
   const bulkBtn = document.getElementById('bulk-apply');
   if (bulkBtn) bulkBtn.addEventListener('click', applyBulk);
   const submitBtn = document.getElementById('submit');
@@ -162,12 +175,20 @@ function applyBulk() {
   if (!days.length) return alert('曜日を選んでください');
   if (!s || !e) return alert('開始と終了の時刻を選んでください');
   if (s >= e) return alert('終了は開始より後の時刻にしてください');
+  let applied = 0;
+  const skipped = [];
   app.querySelectorAll('.row[data-locked="0"]').forEach(row => {
-    if (days.includes(dayOf(row.dataset.date))) {
-      row.querySelector('.start').value = s;
-      row.querySelector('.end').value = e;
-    }
+    const ds = row.dataset.date;
+    if (!days.includes(dayOf(ds))) return;
+    const opts = dayMap[ds].options;
+    if (opts.indexOf(s) < 0 || opts.indexOf(e) < 0) { skipped.push(label(ds)); return; }
+    row.querySelector('.start').value = s;
+    row.querySelector('.end').value = e;
+    applied++;
   });
+  if (skipped.length) {
+    alert(`${applied}日に反映しました。\n次の日は受付時間の範囲外のため、反映していません：\n${skipped.join('、')}`);
+  }
 }
 
 function collect() {
@@ -177,9 +198,11 @@ function collect() {
     const s = row.querySelector('.start').value;
     const e = row.querySelector('.end').value;
     const ds = row.dataset.date;
+    const day = dayMap[ds];
     if (!s && !e) return;
     if (!s || !e) errors.push(`${label(ds)}：開始と終了の両方を選んでください`);
     else if (s >= e) errors.push(`${label(ds)}：終了は開始より後の時刻にしてください`);
+    else if (day.options.indexOf(s) < 0 || day.options.indexOf(e) < 0) errors.push(`${label(ds)}：${day.start}〜${day.end}の範囲で選んでください`);
     else entries.push({ date: ds, start: s, end: e });
   });
   return { entries, errors };
@@ -187,20 +210,24 @@ function collect() {
 
 async function submit() {
   const { entries, errors } = collect();
+  const memo = document.getElementById('memo').value.trim();
   if (errors.length) return alert(errors.join('\n'));
-  if (form.phase === 'late' && !entries.length) return alert('追加する日を入力してください');
+  if (form.phase === 'late' && !entries.length && memo === (form.memo || '').trim()) return alert('追加する日を入力するか、備考を変更してください');
   if (form.phase === 'open' && !entries.length && !confirm('出勤できる日が1日もありません。このまま提出しますか？')) return;
 
   const btn = document.getElementById('submit');
   btn.disabled = true;
   btn.textContent = '送信中…';
   try {
-    const result = await api({ action: 'submit', entries });
+    const result = await api({ action: 'submit', entries, memo });
     // 本人の発言として送ると、ボットからの返信（通数にカウントされない）で提出内容が届く
     try {
       if (liff.isInClient()) await liff.sendMessages([{ type: 'text', text: 'シフトを提出しました' }]);
     } catch (e) { /* トーク画面以外から開いた場合は送れないので無視 */ }
-    const text = result.phase === 'late' ? `${result.added}日分を追加しました。` : '提出しました。';
+    let text = '提出しました。';
+    if (result.phase === 'late') {
+      text = result.added ? `${result.added}日分を追加しました。` : '備考を変更しました。';
+    }
     app.innerHTML = `<p class="msg">${text}<br>LINEのトーク画面に提出内容が届きます。</p>
       <button class="btn" id="close">閉じる</button>`;
     document.getElementById('close').addEventListener('click', () => {
